@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- REGLA DE SEGURIDAD: prohíbe que esta página envíe o reciba datos de internet (connect-src 'none') -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; manifest-src 'self'; worker-src 'self'; connect-src 'none'; form-action 'none'; base-uri 'none'">
+<title>Mis finanzas</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0E6B6B">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Finanzas">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+/* ===== 1. COLORES: se definen una vez y se usan en todo el archivo ===== */
+:root{--bg:#EEF3F4;--card:#FFFFFF;--ink:#13262B;--mute:#5E7278;--line:#D8E2E4;--acc:#0E6B6B;--acc-ink:#fff;--out:#B4344A;--in:#1B7A4B;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0F1A1D;--card:#17262A;--ink:#E6F0F1;--mute:#93A9AE;--line:#27393D;--acc:#4DC2BD;--acc-ink:#0F1A1D;--out:#F07A8C;--in:#5FD39A;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0F1A1D;--card:#17262A;--ink:#E6F0F1;--mute:#93A9AE;--line:#27393D;--acc:#4DC2BD;--acc-ink:#0F1A1D;--out:#F07A8C;--in:#5FD39A;color-scheme:dark}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 "Manrope",system-ui,-apple-system,"Segoe UI",sans-serif;padding-bottom:84px}
+main{max-width:560px;margin:0 auto;padding:16px}
+h1{font-size:1.5rem;margin:8px 0 16px}
+h2{font-size:1.05rem;margin:22px 0 10px}
+.box{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:10px}
+.row{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.mute{color:var(--mute);font-size:.88rem}
+.big{font-size:2rem;font-weight:800;letter-spacing:-.02em}
+.out{color:var(--out)}.in{color:var(--in)}
+.bar{height:8px;border-radius:4px;background:var(--line);margin-top:6px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--acc)}
+button,input,select{font:inherit;color:inherit}
+button{border:0;border-radius:10px;padding:10px 14px;background:var(--acc);color:var(--acc-ink);font-weight:700;cursor:pointer}
+button.ghost{background:transparent;color:var(--mute);border:1px solid var(--line)}
+button.del{background:transparent;color:var(--out);padding:4px 8px}
+input,select{width:100%;padding:11px;border-radius:10px;border:1px solid var(--line);background:var(--bg);margin:4px 0 12px}
+label{font-size:.85rem;color:var(--mute)}
+nav{position:fixed;left:0;right:0;bottom:0;display:flex;background:var(--card);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom,0px)}
+nav button{flex:1;background:none;color:var(--mute);border-radius:0;padding:14px 2px;font-size:.88rem}
+nav button.on{color:var(--acc);box-shadow:inset 0 3px 0 var(--acc)}
+.fab{position:fixed;right:18px;bottom:calc(76px + env(safe-area-inset-bottom,0px));width:56px;height:56px;border-radius:28px;font-size:1.8rem;padding:0;box-shadow:0 4px 14px rgba(0,0,0,.25)}
+#sheet{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:flex-end;z-index:20}
+#sheet.open{display:flex}
+#sheet .in-sheet{background:var(--card);width:100%;max-width:560px;margin:0 auto;border-radius:18px 18px 0 0;padding:18px 16px calc(18px + env(safe-area-inset-bottom,0px));max-height:90%;overflow-y:auto}
+.seg{display:flex;gap:8px;margin-bottom:12px}.seg button{flex:1;background:var(--bg);color:var(--mute);border:1px solid var(--line)}
+.seg button.on{background:var(--acc);color:var(--acc-ink)}
+</style>
+</head>
+<body>
+<main id="app"></main>
+<button class="fab" id="fab" aria-label="Agregar movimiento">+</button>
+<nav id="tabs"></nav>
+<div id="sheet"><div class="in-sheet" id="sheetBody"></div></div>
+
+<script>
+/* ===== 2. DATOS: todo vive en un objeto "datos" y se guarda en tu teléfono ===== */
+let CLAVE = 'finanzas-v1';            // nombre con el que se guarda en el navegador
+const CATEGORIAS = ['Comida','Transporte','Hogar','Ocio','Salud','Compras','Servicios','Otros'];
+let datos = { tarjetas: [], movs: [] }; // tarjetas y movimientos (gastos e ingresos)
+let vista = 'resumen';                  // pestaña activa
+
+// Carga los datos del perfil que entró (cada perfil tiene su propia CLAVE)
+async function cargar(){
+  datos = { tarjetas: [], movs: [] };
+  const g = localStorage.getItem(CLAVE);
+  if (g) datos = JSON.parse(g.startsWith('v2:') ? await descifrar(g, llave) : g);   // si falla, NO seguimos (así nunca se pisan datos)
+  normalizar();
+}
+// llave = clave de cifrado que solo existe en memoria mientras la app está abierta y desbloqueada
+let llave = null, cola = Promise.resolve();
+function guardar(){
+  const txt = JSON.stringify(datos), k = CLAVE, ll = llave;   // foto de los datos en este instante
+  cola = cola.then(async () => { try { localStorage.setItem(k, ll ? await cifrar(txt, ll) : txt); } catch(e) {} });
+}
+// Si faltan las secciones nuevas (pagos, presupuestos, fijos, aviso), las crea vacías
+function normalizar(){ datos.pagos = datos.pagos||[]; datos.presup = datos.presup||{}; datos.fijos = datos.fijos||[]; if (datos.aviso==null) datos.aviso = 5;
+  datos.metas = datos.metas||[]; datos.aportes = datos.aportes||[];
+  if (!datos.metas.some(m => m.fondo)) datos.metas.unshift({ id:'fondo', nombre:'Fondo de emergencia', fondo:true, meses:3 }); }
+normalizar();
+
+/* ===== 3. HERRAMIENTAS PEQUEÑAS ===== */
+const $ = s => document.querySelector(s);
+let privado = false;   // modo privado: oculta los montos
+const dinero = n => privado ? '••••' : n.toLocaleString('es-MX',{style:'currency',currency:'MXN'}); // cambia MXN por tu moneda
+const esc = t => String(t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const aTexto = d => d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+const aFecha = s => { const [y,m,d] = s.split('-').map(Number); return new Date(y,m-1,d); };
+const bonita = d => d.toLocaleDateString('es-MX',{day:'numeric',month:'short'});
+
+/* ===== MESES: para ver el pasado (retroactivo) ===== */
+const mesActual = () => aTexto(new Date()).slice(0,7);
+let mesVer = mesActual();                 // mes que estás viendo, ej. "2026-10"
+function cambiarMes(n){ const [y,m] = mesVer.split('-').map(Number); mesVer = aTexto(new Date(y, m-1+n, 1)).slice(0,7); pintar(); }
+function selMes(){   // barra con ◀ mes ▶
+  const [y,m] = mesVer.split('-').map(Number);
+  const nombre = new Date(y, m-1, 1).toLocaleDateString('es-MX',{month:'long',year:'numeric'});
+  return `<div class="row" style="margin-bottom:12px"><button class="ghost" onclick="cambiarMes(-1)">◀</button><b style="text-transform:capitalize">${nombre}</b><button class="ghost" onclick="cambiarMes(1)">▶</button></div>`;
+}
+// Estado de cuenta de una tarjeta para el mes que estás viendo
+function estadoMes(t){
+  const [y,m] = mesVer.split('-').map(Number);
+  const fin = corteDe(y, m-1, t.corte), ini = corteDe(y, m-2, t.corte);
+  const lim = new Date(fin); lim.setDate(lim.getDate() + t.pago);
+  return `<div class="box"><b>${esc(t.nombre)}</b><div class="row" style="margin-top:8px"><span class="mute">Corte del ${bonita(fin)}</span><b class="out">${dinero(sumar(t,[ini,fin]))}</b></div><div class="mute">Fecha límite: ${bonita(lim)}</div></div>`;
+}
+
+/* ===== 4. LÓGICA DEL CORTE ===== */
+// Fecha de corte de un mes (si el mes no tiene día 31, usa el último día)
+function corteDe(anio, mes, dia){
+  const ultimo = new Date(anio, mes+1, 0).getDate();
+  return new Date(anio, mes, Math.min(dia, ultimo));
+}
+// Devuelve los dos periodos de una tarjeta: el actual (abierto) y el anterior (ya cerrado, por pagar)
+function periodos(t){
+  const hoy = new Date(); hoy.setHours(0,0,0,0);
+  let a = hoy.getFullYear(), m = hoy.getMonth();
+  let sig = corteDe(a, m, t.corte);
+  if (sig < hoy){ m++; sig = corteDe(a, m, t.corte); }   // el corte de este mes ya pasó: toca el siguiente
+  const ant = corteDe(a, m-1, t.corte), ant2 = corteDe(a, m-2, t.corte);
+  const limite = new Date(ant); limite.setDate(limite.getDate() + t.pago);
+  return { actual:[ant, sig], anterior:[ant2, ant], limite };
+}
+// Suma los gastos de una tarjeta entre dos fechas (sin incluir la inicial, incluyendo la final)
+function sumar(t, [ini, fin]){
+  // Si el banco pasa al SIGUIENTE corte las compras del día de corte (t.sig), se recorre el periodo un día atrás
+  const dia = t.sig ? -1 : 0, a = new Date(ini), b = new Date(fin); a.setDate(a.getDate()+dia); b.setDate(b.getDate()+dia);
+  // cada compra aporta su cuota (si es a meses sin intereses, se reparte entre los cortes)
+  return datos.movs.filter(x => x.tarjeta===t.id && x.tipo==='gasto').map(x => ({monto: cuotaEn(x, a, b)}))
+                   .reduce((s,x) => s + x.monto, 0);
+}
+
+/* ===== 5. PANTALLAS ===== */
+function pintar(){
+  $('#tabs').innerHTML = [['resumen','Resumen'],['movs','Movimientos'],['ahorro','Ahorro'],['tarjetas','Tarjetas']]
+    .map(([k,n]) => `<button class="${vista===k?'on':''}" onclick="vista='${k}';pintar()">${n}</button>`).join('');
+  $('#app').innerHTML = vista==='resumen' ? pRes() : vista==='movs' ? pMovs() : vista==='ahorro' ? pAhorro() : pTarj();
+}
+
+function pRes(){
+  const mes = mesVer;               // "2026-10"
+  const delMes = datos.movs.filter(x => x.fecha.startsWith(mes));
+  const gas = delMes.filter(x=>x.tipo==='gasto'), ing = delMes.filter(x=>x.tipo==='ingreso');
+  const tg = gas.reduce((s,x)=>s+x.monto,0), ti = ing.reduce((s,x)=>s+x.monto,0);
+  const porCat = {}; gas.forEach(x => porCat[x.cat] = (porCat[x.cat]||0) + x.monto);
+  const lista = Object.entries(porCat).sort((a,b)=>b[1]-a[1]);       // de mayor a menor gasto
+  let h = `<div class="row"><h1>Resumen</h1><button class="ghost" onclick="privado=!privado;pintar()">${privado?'Mostrar':'Ocultar'} montos</button></div>${pPend()}${selMes()}<div class="box"><div class="mute">Balance</div>
+    <div class="big ${ti-tg<0?'out':'in'}">${dinero(ti-tg)}</div>
+    <div class="row mute"><span>Ingresos <b class="in">${dinero(ti)}</b></span><span>Gastos <b class="out">${dinero(tg)}</b></span></div></div>`;
+  h += `<h2>¿En qué gastas más?</h2><div class="box">` + (lista.length ? lista.map(([c,v]) =>
+    `<div style="margin-bottom:12px"><div class="row"><span>${esc(c)}</span><b>${dinero(v)}${datos.presup[c]?' / '+dinero(datos.presup[c]):''}</b></div>
+     <div class="bar"><i style="width:${Math.min(100, datos.presup[c] ? v/datos.presup[c]*100 : v/lista[0][1]*100)}%;${datos.presup[c] && v>datos.presup[c] ? 'background:var(--out)' : ''}"></i></div></div>`).join('') : `<span class="mute">Aún no hay gastos este mes. Toca + para agregar el primero.</span>`) + `</div>`;
+  h += `<h2>Cortes de tus tarjetas</h2>` + (datos.tarjetas.length ? datos.tarjetas.map(t => {
+    if (mesVer !== mesActual()) return estadoMes(t);   // mes pasado: muestra su corte
+    const p = periodos(t);
+    return `<div class="box"><b>${esc(t.nombre)}</b>
+      <div class="row" style="margin-top:8px"><span class="mute">Total del último corte</span><b class="out">${dinero(sumar(t,p.anterior))}</b></div>
+      <div class="mute">Fecha límite: ${bonita(p.limite)}</div>
+      <div class="row" style="margin-top:8px"><span class="mute">Acumulado hasta el corte del ${bonita(p.actual[1])}</span><b>${dinero(sumar(t,p.actual))}</b></div></div>`;
+  }).join('') : `<div class="box mute">Agrega tu primera tarjeta en la pestaña Tarjetas.</div>`);
+  return h;
+}
+
+function pMovs(){
+  const l = datos.movs.filter(x => x.fecha.startsWith(mesVer)).sort((a,b) => b.fecha.localeCompare(a.fecha));
+  return `<h1>Movimientos</h1>${selMes()}<div class="mute" style="margin-bottom:10px">Toca un movimiento para corregirlo. Con ✕ lo borras.</div>` + (l.length ? l.map(x => {
+    const t = datos.tarjetas.find(c => c.id===x.tarjeta);
+    return `<div class="box row"><div style="flex:1;cursor:pointer" onclick="abrirMov('${x.id}')"><b>${esc(x.desc||x.cat)}</b>
+      <div class="mute">${bonita(aFecha(x.fecha))} · ${esc(x.cat)} · ${t?esc(t.nombre):'Efectivo'}${x.msi>1?' · '+x.msi+' MSI':''}</div></div>
+      <div class="row"><b class="${x.tipo==='gasto'?'out':'in'}">${x.tipo==='gasto'?'−':'+'}${dinero(x.monto)}</b>
+      <button class="del" onclick="borrarMov('${x.id}')" aria-label="Borrar">✕</button></div></div>`;
+  }).join('') : `<div class="box mute">No hay movimientos en este mes.</div>`);
+}
+
+function pTarj(){
+  return `<h1>Tarjetas</h1>` + datos.tarjetas.map(t =>
+    `<div class="box row"><div><b>${esc(t.nombre)}</b><div class="mute">Corte día ${t.corte} · pagas ${t.pago} días después</div><div class="mute">Compra del día de corte: ${t.sig?'siguiente corte':'este corte'}</div><button class="ghost" style="padding:4px 10px;margin-top:6px" onclick="abrirTarj('${t.id}')">Editar</button></div>
+     <button class="del" onclick="borrarTarj('${t.id}')">✕</button></div>`).join('') +
+  `<button onclick="abrirTarj()">Agregar tarjeta</button>
+   <h2>Mi perfil: ${esc(perfil.nombre)}</h2><div class="box"><div class="row"><button class="ghost" onclick="bloquear()">Bloquear ahora</button><button class="ghost" onclick="activarBio()">${perfil.cred?'Face ID activo':'Activar Face ID'}</button></div><div class="row" style="margin-top:10px"><button class="ghost" onclick="formPin()">Cambiar contraseña</button><button class="ghost" onclick="borrarPerfil()">Eliminar perfil</button></div><button class="ghost" style="width:100%;margin-top:10px" onclick="formPerfil()">Agregar otro perfil en este teléfono</button></div>
+   <h2>Aviso de pago</h2><div class="box row"><span class="mute">Avisarme ${datos.aviso} días antes del límite</span><button class="ghost" onclick="cambiarAviso()">Cambiar</button></div>
+   <h2>Presupuestos</h2><div class="box row"><span class="mute">${Object.keys(datos.presup).length} categorías con tope</span><button class="ghost" onclick="abrirPres()">Editar</button></div>
+   <h2>Gastos fijos</h2>${datos.fijos.map(f=>`<div class="box row"><div><b>${esc(f.desc)}</b><div class="mute">${dinero(f.monto)} · cada día ${f.dia}</div></div><button class="del" onclick="borrarFijo('${f.id}')">✕</button></div>`).join('')}<button class="ghost" onclick="abrirFijo()">Agregar gasto fijo</button>
+   <h2>Pagos registrados</h2>${[...datos.pagos].sort((a,b)=>b.fecha.localeCompare(a.fecha)).slice(0,6).map(z=>{const t=datos.tarjetas.find(c=>c.id===z.tarjeta);return `<div class="box row"><div><b>${t?esc(t.nombre):'Tarjeta'}</b><div class="mute">Pagado el ${bonita(aFecha(z.fecha))} · corte ${bonita(aFecha(z.corte))}</div></div><div class="row"><b class="in">${dinero(z.monto)}</b><button class="del" onclick="borrarPago('${z.id}')">✕</button></div></div>`}).join('')||'<div class="mute">Aquí aparecerán tus pagos.</div>'}
+   <h2>Respaldo</h2><div class="box"><div class="mute" style="margin-bottom:10px">Copia tus datos para guardarlos en tus notas o pasarlos a otro teléfono.</div>
+   <div class="row"><button class="ghost" onclick="copiar()">Copiar respaldo</button><button class="ghost" onclick="abrirRest()">Restaurar</button></div></div>
+   <h2>Subir histórico</h2><div class="box"><div class="mute" style="margin-bottom:10px">Pega muchos movimientos de golpe desde Excel, Google Sheets o tu estado de cuenta.</div><button onclick="abrirImp()">Importar movimientos</button></div>`;
+}
+
+/* ===== 6. FORMULARIOS (ventana que sube desde abajo) ===== */
+let tipoActual = 'gasto';
+// Avisos y confirmaciones propias de la app (las ventanitas del navegador pueden estar bloqueadas aquí)
+function toast(msg){
+  let t = $('#toast');
+  if (!t){ t = document.createElement('div'); t.id = 'toast';
+    t.style.cssText = 'position:fixed;left:16px;right:16px;top:calc(12px + env(safe-area-inset-top,0px));max-width:528px;margin:0 auto;background:var(--ink);color:var(--bg);padding:12px 14px;border-radius:12px;z-index:50;font-weight:600';
+    document.body.appendChild(t); }
+  t.textContent = msg; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 3500);
+}
+window.alert = toast;   // todos los alert() de la app ahora usan este aviso
+function preguntar(texto, ok){   // pregunta "¿seguro?" y ejecuta ok() si dices que sí
+  abrir(`<h2 style="margin-top:0">${esc(texto)}</h2><div class="row"><button class="ghost" onclick="cerrar()">Cancelar</button><button id="si">Sí, continuar</button></div>`);
+  $('#si').onclick = () => { cerrar(); ok(); };
+}
+function abrir(html){ $('#sheetBody').innerHTML = html; $('#sheet').classList.add('open'); }
+function cerrar(){ $('#sheet').classList.remove('open'); editId = null; editTarj = null; editMeta = null; }
+$('#sheet').addEventListener('click', e => { if (e.target.id==='sheet') cerrar(); }); // tocar fuera cierra
+$('#fab').onclick = () => abrirMov();
+
+let editId = null;   // si tiene valor, estamos corrigiendo un movimiento existente
+function abrirMov(id){
+  editId = id || null;
+  tipoActual = 'gasto';
+  abrir(`<h2 style="margin-top:0">${editId?'Editar':'Nuevo'} movimiento</h2>
+   <div class="seg"><button id="bg" class="on" onclick="setTipo('gasto')">Gasto</button><button id="bi" onclick="setTipo('ingreso')">Ingreso</button></div>
+   <label>Monto</label><input id="monto" type="number" inputmode="decimal" placeholder="0.00">
+   <label>Descripción (opcional)</label><input id="desc" placeholder="Ej. Tacos, nómina…">
+   <label>Fecha</label><input id="fecha" type="date" value="${aTexto(new Date())}">
+   <div id="extra"><label>Categoría</label><select id="cat">${CATEGORIAS.map(c=>`<option>${c}</option>`).join('')}</select>
+   <label>Pagado con</label><select id="tar"><option value="">Efectivo / débito</option>${datos.tarjetas.map(t=>`<option value="${t.id}">${esc(t.nombre)}</option>`).join('')}</select>
+   <label>Meses sin intereses (solo con tarjeta)</label><select id="msi"><option value="1">Pago único</option>${[3,6,9,12,18,24].map(n=>`<option value="${n}">${n} meses</option>`).join('')}</select></div>
+   <div class="row"><button class="ghost" onclick="cerrar()">Cancelar</button><button onclick="guardarMov()">Guardar</button></div>`);
+  if (editId){   // al corregir, rellena el formulario con los datos actuales
+    const x = datos.movs.find(m => m.id===editId);
+    setTipo(x.tipo); $('#monto').value = x.monto; $('#desc').value = x.desc; $('#fecha').value = x.fecha;
+    if (x.tipo==='gasto'){ $('#cat').value = x.cat; $('#tar').value = x.tarjeta; $('#msi').value = x.msi||1; }
+  }
+}
+function setTipo(t){
+  tipoActual = t;
+  $('#bg').classList.toggle('on', t==='gasto'); $('#bi').classList.toggle('on', t==='ingreso');
+  $('#extra').style.display = t==='gasto' ? 'block' : 'none';       // los ingresos no llevan categoría ni tarjeta
+}
+function guardarMov(){
+  const monto = parseFloat($('#monto').value);
+  if (!(monto > 0)){ alert('Escribe un monto mayor a 0.'); return; }
+  if (editId){ datos.movs = datos.movs.filter(m => m.id!==editId); }   // al corregir, se reemplaza el anterior
+  datos.movs.push({ id: 'm'+Date.now(), tipo: tipoActual, monto, desc: $('#desc').value.trim(), fecha: $('#fecha').value,
+    cat: tipoActual==='gasto' ? $('#cat').value : 'Ingreso', tarjeta: tipoActual==='gasto' ? $('#tar').value : '',
+    msi: tipoActual==='gasto' && $('#tar').value ? parseInt($('#msi').value) : 1 });
+  guardar(); cerrar(); pintar();
+}
+function borrarMov(id){ preguntar('¿Borrar este movimiento?', () => { datos.movs = datos.movs.filter(x=>x.id!==id); guardar(); pintar(); }); }
+
+let editTarj = null;   // si tiene valor, estamos editando una tarjeta existente
+function abrirTarj(id){
+  abrir(`<h2 style="margin-top:0">${id?'Editar':'Nueva'} tarjeta</h2>${id?'<div class="mute" style="margin-bottom:10px">Si cambias el día de corte, los pagos ya registrados pueden dejar de coincidir con los cortes nuevos.</div>':''}
+   <label>Nombre</label><input id="tn" placeholder="Ej. BBVA Azul">
+   <label>Día de corte (1–31)</label><input id="tc" type="number" inputmode="numeric" placeholder="Ej. 15">
+   <label>Días entre el corte y la fecha límite de pago</label><input id="tp" type="number" inputmode="numeric" value="20">
+   <label>Una compra hecha el mismo día del corte entra en</label><select id="ts"><option value="0">Este corte (el que cierra ese día)</option><option value="1">El siguiente corte</option></select>
+   <div class="row"><button class="ghost" onclick="cerrar()">Cancelar</button><button onclick="guardarTarj()">Guardar</button></div>`);
+  if (id){   // al editar, rellena el formulario con los datos actuales
+    const t = datos.tarjetas.find(c => c.id===id); editTarj = id;
+    $('#tn').value = t.nombre; $('#tc').value = t.corte; $('#tp').value = t.pago; $('#ts').value = t.sig ? '1' : '0';
+  }
+}
+function guardarTarj(){
+  const nombre = $('#tn').value.trim(), corte = parseInt($('#tc').value), pago = parseInt($('#tp').value);
+  if (!nombre || !(corte>=1 && corte<=31) || !(pago>=0)){ alert('Revisa el nombre, el día de corte (1 a 31) y los días de pago.'); return; }
+  if (editTarj) Object.assign(datos.tarjetas.find(c => c.id===editTarj), { nombre, corte, pago, sig: $('#ts').value==='1' });
+  else datos.tarjetas.push({ id:'t'+Date.now(), nombre, corte, pago, sig: $('#ts').value==='1' });
+  guardar(); cerrar(); pintar();
+}
+function borrarTarj(id){ preguntar('¿Borrar la tarjeta? Sus compras se quedan como efectivo.', () => {
+  datos.tarjetas = datos.tarjetas.filter(t=>t.id!==id); datos.movs.forEach(x=>{ if(x.tarjeta===id) x.tarjeta=''; }); guardar(); pintar(); }); }
+
+/* ===== 7. RESPALDO ===== */
+function copiar(){ navigator.clipboard.writeText(JSON.stringify(datos)).then(()=>alert('Respaldo copiado. Pégalo en tus notas.'), ()=>alert('No se pudo copiar.')); }
+function abrirRest(){
+  abrir(`<h2 style="margin-top:0">Restaurar respaldo</h2><label>Pega aquí el texto de tu respaldo</label><textarea id="rtxt" rows="8" style="width:100%;padding:11px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink);margin:4px 0 12px;font:inherit"></textarea><div class="row"><button class="ghost" onclick="cerrar()">Cancelar</button><button onclick="restaurar()">Restaurar</button></div>`);
+}
+function restaurar(){
+  const t = ($('#rtxt')||{}).value; if (!t) return;
+  try { const d = JSON.parse(t); if (!d.tarjetas || !d.movs) throw 0; datos = d; normalizar(); guardar(); cerrar(); pintar(); }
+  catch(e){ alert('El texto no es un respaldo válido.'); }
+}
+
+/* ===== 8. IMPORTAR MUCHOS MOVIMIENTOS DE GOLPE ===== */
+function abrirImp(){
+  abrir(`<h2 style="margin-top:0">Importar movimientos</h2>
+   <div class="mute" style="margin-bottom:10px">Una línea por movimiento. Columnas separadas por coma, punto y coma o tabulador (así salen al copiar de Excel):<br><b>fecha, monto, descripción, categoría, tarjeta</b><br>Ejemplo: 14/09/2026, 350.50, Súper, Comida, BBVA Azul<br>La fecha puede ser 2026-09-14 o 14/09/2026. Monto sin comas de miles. Categoría y tarjeta son opcionales; el nombre de la tarjeta debe ser igual al que registraste.</div>
+   <label>Estos movimientos son</label><select id="itipo"><option value="gasto">Gastos</option><option value="ingreso">Ingresos</option></select>
+   <textarea id="itxt" rows="8" style="width:100%;padding:11px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink);margin:4px 0 12px;font:inherit"></textarea>
+   <div class="row"><button class="ghost" onclick="cerrar()">Cancelar</button><button onclick="importar()">Importar</button></div>`);
+}
+function importar(){
+  const tipo = $('#itipo').value; let mal = 0; const nuevos = [];
+  $('#itxt').value.split('\n').forEach(linea => {
+    if (!linea.trim()) return;
+    const c = linea.split(/\t|;|,/).map(s => s.trim());          // separa las columnas
+    let f = c[0]; const monto = Math.abs(parseFloat((c[1]||'').replace(/[$\s]/g,'')));
+    const m = f.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);        // día/mes/año -> año-mes-día
+    if (m) f = m[3]+'-'+m[2].padStart(2,'0')+'-'+m[1].padStart(2,'0');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(f) || !(monto > 0)){ mal++; return; }   // línea inválida
+    const cat = CATEGORIAS.find(x => x.toLowerCase() === (c[3]||'').toLowerCase()) || 'Otros';
+    const t = datos.tarjetas.find(x => x.nombre.toLowerCase() === (c[4]||'').toLowerCase());
+    nuevos.push({ id:'m'+Date.now()+'-'+nuevos.length, tipo, monto, desc:c[2]||'', fecha:f,
+      cat: tipo==='gasto' ? cat : 'Ingreso', tarjeta: tipo==='gasto' && t ? t.id : '' });
+  });
+  datos.movs.push(...nuevos); guardar(); cerrar(); pintar();
+  alert('Importados: '+nuevos.length+'. Líneas omitidas por error: '+mal+'.');
+}
+
+/* ===== 9. CUOTAS A MESES, ESTADOS DE CUENTA Y PAGOS ===== */
+// Cuánto de una compra cae dentro de un corte (compra única = todo; a 6 meses = 1/6 en cada corte)
+function cuotaEn(x, ini, fin){
+  const n = x.msi || 1, f0 = aFecha(x.fecha); let s = 0;
+  for (let k=0; k<n; k++){ const f = corteDe(f0.getFullYear(), f0.getMonth()+k, f0.getDate()); if (f>ini && f<=fin) s += x.monto/n; }
+  return s;
+}
+// Todos los cortes ya cerrados de una tarjeta, del más reciente hacia atrás, con lo pagado y lo pendiente
+function estados(t){
+  let fin = periodos(t).anterior[1];
+  const primera = datos.movs.filter(x => x.tarjeta===t.id).map(x => x.fecha).sort()[0];
+  const lista = [];
+  for (let i=0; i<36 && primera && fin >= aFecha(primera); i++){
+    const ini = corteDe(fin.getFullYear(), fin.getMonth()-1, t.corte);
+    const total = sumar(t, [ini, fin]);
+    const pagado = datos.pagos.filter(z => z.tarjeta===t.id && z.corte===aTexto(fin)).reduce((s,z) => s+z.monto, 0);
+    const lim = new Date(fin); lim.setDate(lim.getDate() + t.pago);
+    lista.push({ ini, fin, total, pagado, pend: Math.max(0, total-pagado), lim });
+    fin = ini;
+  }
+  return lista;
+}
+function pendientes(){   // cortes con deuda, el más urgente primero
+  const out = [];
+  datos.tarjetas.forEach(t => estados(t).forEach(e => { if (e.pend > 0.01) out.push({ t, ...e }); }));
+  return out.sort((a,b) => a.lim - b.lim);
+}
+function pPend(){      // cuadro de arriba: total pendiente + avisos
+  const hoy = new Date(); hoy.setHours(0,0,0,0);
+  const l = pendientes();
+  if (!l.length) return datos.tarjetas.length ? `<div class="box"><b class="in">✓ Sin pagos pendientes</b></div>` : '';
+  const total = l.reduce((s,e) => s+e.pend, 0);
+  return `<div class="box"><div class="mute">Total pendiente por pagar</div><div class="big out">${dinero(total)}</div><div class="mute">Próximo límite: ${bonita(l[0].lim)}</div></div>` +
+  l.map(e => {
+    const d = Math.round((e.lim - hoy)/864e5), urg = d <= datos.aviso;
+    return `<div class="box" style="${urg?'border-color:var(--out)':''}"><div class="row"><div><b>${esc(e.t.nombre)}</b><div class="mute">Corte ${bonita(e.fin)} · límite ${bonita(e.lim)}</div>
+      <div class="${urg?'out':'mute'}">${d<0 ? 'Vencido hace '+(-d)+' días' : d===0 ? 'Vence hoy' : 'Vence en '+d+' días'}</div></div>
+      <div style="text-align:right"><b>${dinero(e.pend)}</b><br><button style="margin-top:6px" onclick="abrirPago('${e.t.id}','${aTexto(e.fin)}')">Pagar</button></div></div></div>`;
+  }).join('');
+}
+function abrirPago(tid, corte){
+  const t = datos.tarjetas.find(c => c.id===tid), e = estados(t).find(x => aTexto(x.fin)===corte);
+  abrir(`<h2 style="margin-top:0">Registrar pago</h2><div class="mute" style="margin-bottom:10px">${esc(t.nombre)} · corte del ${bonita(e.fin)}</div>
+   <label>Monto pagado</label><input id="pmonto" type="number" inputmode="decimal" value="${e.pend.toFixed(2)}">
+   <label>Fecha en que pagaste</label><input id="pfecha" type="date" value="${aTexto(new Date())}">
+   <label style="display:flex;gap:8px;align-items:center;margin-bottom:12px"><input id="pprev" type="checkbox" style="width:auto;margin:0"> Marcar también como pagados los cortes anteriores</label>
+   <div class="row"><button class="ghost" onclick="cerrar()">Cancelar</button><button onclick="guardarPago('${tid}','${corte}')">Guardar pago</button></div>`);
+}
+function guardarPago(tid, corte){
+  const monto = parseFloat($('#pmonto').value), fecha = $('#pfecha').value;
+  if (!(monto>0) || !fecha){ alert('Revisa el monto y la fecha.'); return; }
+  const t = datos.tarjetas.find(c => c.id===tid);
+  if ($('#pprev').checked) estados(t).filter(e => aTexto(e.fin)<corte && e.pend>0.01)
+    .forEach(e => datos.pagos.push({ id:'p'+Date.now()+'-'+aTexto(e.fin), tarjeta:tid, corte:aTexto(e.fin), fecha, monto:e.pend }));
+  datos.pagos.push({ id:'p'+Date.now(), tarjeta:tid, corte, fecha, monto });
+  guardar(); cerrar(); pintar();
+}
+function borrarPago(id){ preguntar('¿Borrar este pago?', () => { datos.pagos = datos.pagos.filter(z => z.id!==id); guardar(); pintar(); }); }
+function alternarSig(id){ const t = datos.tarjetas.find(c => c.id===id); t.sig = !t.sig; guardar(); pintar(); }
+function cambiarAviso(){
+  abrir(`<h2 style="margin-top:0">Aviso de pago</h2><label>¿Cuántos días antes del límite quieres que te avise?</label><input id="aviso" type="number" inputmode="numeric" value="${datos.aviso}"><div class="row"><button class="ghost" onclick="cerrar()">Cancelar</button><button onclick="guardarAviso()">Guardar</button></div>`);
+}
+function guardarAviso(){
+  const n = parseInt($('#aviso').value);
+  if (n >= 0){ datos.aviso = n; guardar(); cerrar(); pintar(); }
+}
+
+/* ===== 10. PRESUPUESTOS ===== */
+function abrirPres(){
+  abrir(`<h2 style="margin-top:0">Presupuesto mensual</h2><div class="mute" style="margin-bottom:10px">Tope por categoría. Déjalo vacío si no quieres límite. La barra se pone roja si te pasas.</div>
+   ${CATEGORIAS.map((c,i) => `<label>${c}</label><input id="p${i}" type="number" inputmode="decimal" value="${datos.presup[c]||''}">`).join('')}
+   <div class="row"><button class="ghost" onclick="cerrar()">Cancelar</button><button onclick="guardarPres()">Guardar</button></div>`);
+}
+function guardarPres(){
+  CATEGORIAS.forEach((c,i) => { const v = parseFloat($('#p'+i).value); if (v>0) datos.presup[c] = v; else delete datos.presup[c]; });
+  guardar(); cerrar(); pintar();
+}
+
+/* ===== 11. GASTOS FIJOS (se registran solos cada mes) ===== */
+function abrirFijo(){
+  abrir(`<h2 style="margin-top:0">Nuevo gasto fijo</h2>
+   <label>Descripción</label><input id="fd" placeholder="Ej. Renta, Netflix">
+   <label>Monto</label><input id="fm" type="number" inputmode="decimal">
+   <label>Día del mes en que se cobra (1–31)</label><input id="fdia" type="number" inputmode="numeric">
+   <label>Categoría</label><select id="fc">${CATEGORIAS.map(c=>`<option>${c}</option>`).join('')}</select>
+   <label>Pagado con</label><select id="ft"><option value="">Efectivo / débito</option>${datos.tarjetas.map(t=>`<option value="${t.id}">${esc(t.nombre)}</option>`).join('')}</select>
+   <div class="row"><button class="ghost" onclick="cerrar()">Cancelar</button><button onclick="guardarFijo()">Guardar</button></div>`);
+}
+function guardarFijo(){
+  const desc = $('#fd').value.trim(), monto = parseFloat($('#fm').value), dia = parseInt($('#fdia').value);
+  if (!desc || !(monto>0) || !(dia>=1 && dia<=31)){ alert('Revisa descripción, monto y día (1 a 31).'); return; }
+  datos.fijos.push({ id:'f'+Date.now(), desc, monto, dia, cat:$('#fc').value, tarjeta:$('#ft').value, desde:mesActual(), ultimo:'' });
+  aplicarFijos(); guardar(); cerrar(); pintar();
+}
+function borrarFijo(id){ preguntar('¿Quitar este gasto fijo? Los ya registrados se conservan.', () => { datos.fijos = datos.fijos.filter(f => f.id!==id); guardar(); pintar(); }); }
+// Al abrir la app, crea los cargos fijos que ya tocaron y aún no estaban registrados
+function aplicarFijos(){
+  const hoy = new Date(); hoy.setHours(0,0,0,0); let hubo = false;
+  datos.fijos.forEach(f => {
+    const [y, m] = f.desde.split('-').map(Number);
+    for (let i=0; i<60; i++){
+      const d = corteDe(y, m-1+i, f.dia), mk = aTexto(d).slice(0,7);
+      if (d > hoy) break;
+      if (mk > (f.ultimo||'')){
+        datos.movs.push({ id:'m'+Date.now()+'-'+Math.random().toString(36).slice(2,6), tipo:'gasto', monto:f.monto, desc:f.desc, fecha:aTexto(d), cat:f.cat, tarjeta:f.tarjeta, msi:1 });
+        f.ultimo = mk; hubo = true;
+      }
+    }
+  });
+  if (hubo) guardar();
+}
+
+aplicarFijos();
+/* ===== 13. AHORRO: metas que tú eliges + fondo de emergencia ===== */
+let editMeta = null;   // si tiene valor, estamos editando esa meta
+const SUGERIDAS = ['Viaje','Casa','Auto','Estudios','Celular','Regalo'];
+// Gasto mensual promedio de los últimos 3 meses completos (si aún no hay, usa el mes actual)
+function gastoProm(){
+  const hoy = new Date(), tot = m => datos.movs.filter(x => x.tipo==='gasto' && x.fecha.startsWith(m)).reduce((s,x) => s+x.monto, 0);
+  const con = [1,2,3].map(i => tot(aTexto(new Date(hoy.getFullYear(), hoy.getMonth()-i, 1)).slice(0,7))).filter(v => v > 0);
+  return con.length ? con.reduce((a,b) => a+b, 0)/con.length : tot(mesActual());
+}
+const objetivoDe = m => m.fondo ? Math.round(gastoProm() * m.meses) : m.objetivo;   // el fondo se calcula solo
+const ahorrado = m => datos.aportes.filter(a => a.meta===m.id).reduce((s,a) => s + a.monto, 0);
+
+function pAhorro(){
+  const mes = mesActual();
+  const total = datos.metas.reduce((s,m) => s + ahorrado(m), 0);
+  const netoMes = datos.aportes.filter(a => a.fecha.startsWith(mes)).reduce((s,a) => s + a.monto, 0);
+  const ingMes = datos.movs.filter(x => x.tipo==='ingreso' && x.fecha.startsWith(mes)).reduce((s,x) => s + x.monto, 0);
+  let h = `<h1>Ahorro</h1><div class="box"><div class="mute">Total ahorrado</div><div class="big in">${dinero(total)}</div>
+    <div class="mute">Este mes apartaste ${dinero(netoMes)}${ingMes > 0 ? ' · '+Math.round(netoMes/ingMes*100)+'% de tus ingresos' : ''}</div></div>`;
+  h += datos.metas.map(tarjetaMeta).join('') + `<button onclick="abrirMeta()">Agregar meta</button><h2>Últimos movimientos de ahorro</h2>`;
+  const l = [...datos.aportes].sort((a,b) => b.fecha.localeCompare(a.fecha)).slice(0,8);
+  h += l.length ? l.map(a => { const m = datos.metas.find(x => x.id===a.meta);
+    return `<div class="box row"><div><b>${m ? esc(m.nombre) : 'Meta eliminada'}</b><div class="mute">${bonita(aFecha(a.fecha))}${a.nota ? ' · '+esc(a.nota) : ''}</div></div>
+      <div class="row"><b class="${a.monto>=0?'in':'out'}">${a.monto>=0?'+':'−'}${dinero(Math.abs(a.monto))}</b><button class="del" onclick="borrarAporte('${a.id}')">✕</button></div></div>`; }).join('')
+    : '<div class="box mute">Aún no has apartado dinero. Toca Aportar en una meta.</div>';
+  return h;
+}
+function tarjetaMeta(m){
+  const obj = objetivoDe(m), ah = ahorrado(m), falta = Math.max(0, obj-ah), pct = obj > 0 ? Math.min(100, ah/obj*100) : 0, hoy = new Date();
+  let nota = '';
+  if (m.fondo) nota = gastoProm() > 0 ? `Tu gasto promedio es ${dinero(gastoProm())} al mes. Meta: ${m.meses} meses de gastos.` : 'Registra tus gastos y calcularé esta meta por ti (de 3 a 6 meses de gastos).';
+  else if (obj > 0 && falta <= 0) nota = '¡Meta cumplida!';
+  else if (m.fecha) nota = aFecha(m.fecha) < hoy ? 'La fecha límite ya pasó.' : `Para el ${bonita(aFecha(m.fecha))} aparta unos ${dinero(falta / Math.max(1, Math.round((aFecha(m.fecha) - hoy)/2629800000)))} al mes.`;
+  return `<div class="box"><div class="row"><b>${esc(m.nombre)}</b>${m.fondo ? '' : `<button class="del" onclick="borrarMeta('${m.id}')">✕</button>`}</div>
+   <div class="row" style="margin-top:6px"><span class="mute">Llevas</span><b>${dinero(ah)}${obj > 0 ? ' / '+dinero(obj) : ''}</b></div>
+   <div class="bar"><i style="width:${pct}%"></i></div><div class="mute" style="margin-top:6px">${nota}</div>
+   <div class="row" style="margin-top:10px"><button onclick="abrirAporte('${m.id}',1)">Aportar</button><button class="ghost" onclick="abrirAporte('${m.id}',-1)">Retirar</button><button class="ghost" onclick="abrirMeta('${m.id}')">Editar</button></div></div>`;
+}
+function abrirAporte(id, signo){
+  const m = datos.metas.find(x => x.id===id);
+  abrir(`<h2 style="margin-top:0">${signo > 0 ? 'Aportar a' : 'Retirar de'} ${esc(m.nombre)}</h2>
+   <label>Monto</label><input id="am" type="number" inputmode="decimal" placeholder="0.00">
+   <label>Fecha</label><input id="af" type="date" value="${aTexto(new Date())}">
+   <label>Nota (opcional)</label><input id="an">
+   <div class="row"><button class="ghost" onclick="cerrar()">Cancelar</button><button onclick="guardarAporte('${id}',${signo})">Guardar</button></div>`);
+}
+function guardarAporte(id, signo){
+  const monto = parseFloat($('#am').value), fecha = $('#af').value, m = datos.metas.find(x => x.id===id);
+  if (!(monto > 0) || !fecha){ alert('Escribe un monto mayor a 0 y una fecha.'); return; }
+  if (signo < 0 && monto > ahorrado(m) + 0.001){ alert('No puedes retirar más de lo que has ahorrado en esta meta.'); return; }
+  datos.aportes.push({ id:'a'+Date.now(), meta:id, monto: signo*monto, fecha, nota: $('#an').value.trim() });
+  guardar(); cerrar(); pintar();
+}
+function borrarAporte(id){ preguntar('¿Borrar este movimiento de ahorro?', () => { datos.aportes = datos.aportes.filter(a => a.id!==id); guardar(); pintar(); }); }
+function abrirMeta(id){
+  const m = id ? datos.metas.find(x => x.id===id) : null; editMeta = id || null;
+  if (m && m.fondo){
+    abrir(`<h2 style="margin-top:0">Fondo de emergencia</h2><div class="mute" style="margin-bottom:10px">Dinero para imprevistos (enfermedad, pérdida de empleo, reparaciones). La meta se calcula con tu gasto promedio real.</div>
+     <label>¿Cuántos meses de gastos quieres cubrir?</label><select id="mm">${[3,4,5,6].map(n => `<option value="${n}" ${n===m.meses ? 'selected' : ''}>${n} meses</option>`).join('')}</select>
+     <div class="row"><button class="ghost" onclick="cerrar()">Cancelar</button><button onclick="guardarMeta()">Guardar</button></div>`);
+    return;
+  }
+  abrir(`<h2 style="margin-top:0">${m ? 'Editar' : 'Nueva'} meta</h2><label>¿Para qué quieres ahorrar?</label><input id="mn" placeholder="Ej. Viaje a la playa">
+   <div class="row" style="flex-wrap:wrap;justify-content:flex-start;margin-bottom:12px">${SUGERIDAS.map(s => `<button class="ghost" style="padding:6px 10px" onclick="$('#mn').value='${s}'">${s}</button>`).join('')}</div>
+   <label>Monto que necesitas juntar</label><input id="mo" type="number" inputmode="decimal">
+   <label>Fecha límite (opcional)</label><input id="mf" type="date">
+   <div class="row"><button class="ghost" onclick="cerrar()">Cancelar</button><button onclick="guardarMeta()">Guardar</button></div>`);
+  if (m){ $('#mn').value = m.nombre; $('#mo').value = m.objetivo; $('#mf').value = m.fecha || ''; }
+}
+function guardarMeta(){
+  const m = editMeta ? datos.metas.find(x => x.id===editMeta) : null;
+  if (m && m.fondo){ m.meses = parseInt($('#mm').value); guardar(); cerrar(); pintar(); return; }
+  const nombre = $('#mn').value.trim(), objetivo = parseFloat($('#mo').value), fecha = $('#mf').value;
+  if (!nombre || !(objetivo > 0)){ alert('Escribe para qué ahorras y cuánto necesitas.'); return; }
+  if (m) Object.assign(m, { nombre, objetivo, fecha }); else datos.metas.push({ id:'g'+Date.now(), nombre, objetivo, fecha });
+  guardar(); cerrar(); pintar();
+}
+function borrarMeta(id){ preguntar('¿Eliminar esta meta? También se borran sus aportes.', () => {
+  datos.metas = datos.metas.filter(m => m.id!==id); datos.aportes = datos.aportes.filter(a => a.meta!==id); guardar(); pintar(); }); }
+
+/* ===== 12. PERFILES, CONTRASEÑA, CIFRADO Y FACE ID ===== */
+const PERF = 'finanzas-perfiles';
+let perfiles = [], perfil = null, oculto = 0;
+try { perfiles = JSON.parse(localStorage.getItem(PERF) || '[]'); } catch(e) {}
+function guardarPerfiles(){ try { localStorage.setItem(PERF, JSON.stringify(perfiles)); } catch(e) {} }
+
+// --- CIFRADO: tu contraseña se convierte en una llave (PBKDF2, 250 mil vueltas) y con ella se cifra todo (AES-GCM) ---
+const enc = new TextEncoder(), dec = new TextDecoder();
+const a64 = u => { const b = new Uint8Array(u); let s = ''; for (let i = 0; i < b.length; i += 8192) s += String.fromCharCode(...b.subarray(i, i+8192)); return btoa(s); };
+const de64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+const salNueva = () => a64(crypto.getRandomValues(new Uint8Array(16)));
+async function derivar(clave, sal){
+  const base = await crypto.subtle.importKey('raw', enc.encode(clave), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({ name:'PBKDF2', salt: de64(sal), iterations: 250000, hash:'SHA-256' }, base, { name:'AES-GCM', length:256 }, false, ['encrypt','decrypt']);
+}
+async function cifrar(txt, ll){
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  return 'v2:' + a64(iv) + ':' + a64(await crypto.subtle.encrypt({ name:'AES-GCM', iv }, ll, enc.encode(txt)));
+}
+async function descifrar(s, ll){
+  const [, iv, c] = s.split(':');
+  return dec.decode(await crypto.subtle.decrypt({ name:'AES-GCM', iv: de64(iv) }, ll, de64(c)));
+}
+// Solo para perfiles viejos que todavía usan PIN (se migran al entrar)
+async function hash(pin, sal){
+  const b = await crypto.subtle.digest('SHA-256', enc.encode(sal + pin));
+  return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2,'0')).join('');
+}
+
+async function entrar(p, ll){
+  try { llave = ll; CLAVE = p.key; await cargar(); }
+  catch(e){ llave = null; alert('No se pudieron abrir los datos de este perfil.'); return; }
+  perfil = p; aplicarFijos(); vista = 'resumen';
+  $('#fab').style.display = ''; $('#tabs').style.display = ''; pintar();
+}
+function bloquear(){
+  perfil = null; llave = null; privado = false; datos = { tarjetas: [], movs: [] }; normalizar();   // la llave se borra de la memoria
+  $('#fab').style.display = 'none'; $('#tabs').style.display = 'none';
+  const v = $('#velo'); if (v) v.remove();
+  cerrar(); pLogin(); if (perfiles.length === 1) pedirClave(perfiles[0].id);
+}
+function pLogin(){
+  $('#app').innerHTML = '<h1>Mis finanzas</h1>' + (perfiles.length
+    ? perfiles.map(p => `<button class="box row" style="width:100%;color:var(--ink);text-align:left;font-weight:700" onclick="pedirClave('${p.id}')">${esc(p.nombre)}<span class="mute">Entrar</span></button>`).join('')
+    : '<div class="mute" style="margin-bottom:12px">Crea tu contraseña. Tus datos se cifran con ella y solo tú puedes abrirlos.</div>')
+    + (perfiles.length === 1 ? `<button onclick="pedirClave('${perfiles[0].id}')">Entrar</button>`
+      : `<button class="ghost" onclick="formPerfil()">${perfiles.length ? 'Nuevo perfil' : 'Crear mi contraseña'}</button>`);
+}
+const campoClave = (id, etiqueta) => `<label>${etiqueta}</label><input id="${id}" type="password" autocomplete="off">`;
+function formPerfil(){
+  abrir(`<h2 style="margin-top:0">${perfiles.length ? 'Nuevo perfil' : 'Crea tu contraseña'}</h2><label>Nombre (opcional)</label><input id="pn" placeholder="Ej. Mamá">
+   ${campoClave('pp1', 'Contraseña (mínimo 8 caracteres; puede ser una frase)')}${campoClave('pp2', 'Repite la contraseña')}
+   <div class="mute" style="margin-bottom:10px">Si la olvidas, tus datos no se pueden recuperar. Haz respaldos.</div>
+   <div class="row"><button class="ghost" onclick="cerrar()">Cancelar</button><button onclick="crearPerfil()">Crear</button></div>`);
+}
+async function crearPerfil(){
+  const nombre = $('#pn').value.trim() || 'Yo', a = $('#pp1').value, b = $('#pp2').value;
+  if (a.length < 8 || a !== b){ alert('Usa al menos 8 caracteres, iguales en las dos casillas.'); return; }
+  const id = 'u'+Date.now(), sal = salNueva(), ll = await derivar(a, sal);
+  const p = { id, nombre, v:2, sal, chk: await cifrar('ok', ll), key: perfiles.length ? 'finanzas-v1-'+id : 'finanzas-v1', cred: '' };
+  perfiles.push(p); guardarPerfiles(); cerrar(); entrar(p, ll);
+}
+function pedirClave(id){
+  const p = perfiles.find(x => x.id===id);
+  abrir(`<h2 style="margin-top:0">Hola, ${esc(p.nombre)}</h2>
+   <label>${p.v===2 ? 'Tu contraseña' : 'Tu PIN actual'}</label><input id="pin" type="password" autocomplete="off" ${p.v===2 ? '' : 'inputmode="numeric"'}>
+   <div class="row"><button class="ghost" onclick="cerrar()">Cancelar</button><button onclick="verClave('${id}')">Entrar</button></div>`);
+}
+async function verClave(id){
+  const p = perfiles.find(x => x.id===id), v = $('#pin').value, f = p.f || { n:0, hasta:0 };
+  if (Date.now() < f.hasta){ alert('Espera '+Math.ceil((f.hasta-Date.now())/1000)+' segundos para intentar de nuevo.'); return; }
+  let ok = false, ll = null;
+  if (p.v === 2){ try { ll = await derivar(v, p.sal); ok = await descifrar(p.chk, ll) === 'ok'; } catch(e) {} }
+  else ok = await hash(v, p.sal) === p.h;
+  if (!ok){   // cada fallo a partir del 5.º obliga a esperar más
+    f.n++; f.hasta = f.n >= 5 ? Date.now() + Math.min(3600e3, 30e3 * 2 ** (f.n-5)) : 0; p.f = f; guardarPerfiles();
+    alert('Contraseña incorrecta.' + (f.n >= 5 ? ' Espera antes de reintentar.' : '')); return;
+  }
+  p.f = { n:0, hasta:0 }; guardarPerfiles(); cerrar();
+  if (p.v === 2) entrar(p, ll); else formMigrar(p);
+}
+function formMigrar(p){
+  abrir(`<h2 style="margin-top:0">Protege tus datos</h2><div class="mute" style="margin-bottom:10px">Crea una contraseña. Tus datos se cifrarán con ella. Si la olvidas, no se pueden recuperar.</div>
+   ${campoClave('pp1', 'Contraseña nueva (mínimo 8 caracteres)')}${campoClave('pp2', 'Repite la contraseña')}
+   <button onclick="migrar('${p.id}')">Cifrar mis datos</button>`);
+}
+async function migrar(id){
+  const p = perfiles.find(x => x.id===id), a = $('#pp1').value, b = $('#pp2').value;
+  if (a.length < 8 || a !== b){ alert('Usa al menos 8 caracteres, iguales en las dos casillas.'); return; }
+  const sal = salNueva(), ll = await derivar(a, sal), chk = await cifrar('ok', ll);
+  try { const g = localStorage.getItem(p.key); localStorage.setItem(p.key, await cifrar(g || '{"tarjetas":[],"movs":[]}', ll)); }
+  catch(e){ alert('No se pudo cifrar. Tus datos no se tocaron.'); return; }
+  Object.assign(p, { v:2, sal, chk }); delete p.h; guardarPerfiles(); cerrar(); entrar(p, ll);
+}
+function formPin(){
+  abrir(`<h2 style="margin-top:0">Cambiar contraseña</h2>${campoClave('pa', 'Contraseña actual')}${campoClave('pb', 'Contraseña nueva (mínimo 8 caracteres)')}
+   <div class="row"><button class="ghost" onclick="cerrar()">Cancelar</button><button onclick="guardarPin()">Guardar</button></div>`);
+}
+async function guardarPin(){
+  try { await descifrar(perfil.chk, await derivar($('#pa').value, perfil.sal)); } catch(e){ alert('La contraseña actual no coincide.'); return; }
+  const n = $('#pb').value;
+  if (n.length < 8){ alert('La contraseña nueva debe tener al menos 8 caracteres.'); return; }
+  const sal = salNueva(), ll = await derivar(n, sal), chk = await cifrar('ok', ll);
+  await cola;   // espera a que terminen los guardados pendientes
+  localStorage.setItem(perfil.key, await cifrar(JSON.stringify(datos), ll));   // re-cifra los datos con la llave nueva
+  Object.assign(perfil, { sal, chk }); llave = ll; guardarPerfiles(); cerrar(); alert('Contraseña cambiada.');
+}
+function borrarPerfil(){
+  preguntar('¿Eliminar este perfil y TODOS sus datos? No se puede deshacer.', () => {
+    try { localStorage.removeItem(perfil.key); } catch(e) {}
+    perfiles = perfiles.filter(x => x.id !== perfil.id); guardarPerfiles(); bloquear();
+  });
+}
+
+// --- FACE ID / huella: sirve para volver a entrar rápido tras dejar la app 1 minuto (la contraseña se pide al abrirla de nuevo) ---
+async function activarBio(){
+  try {
+    const c = await navigator.credentials.create({ publicKey: { challenge: crypto.getRandomValues(new Uint8Array(32)),
+      rp: { name: 'Mis finanzas' }, user: { id: enc.encode(perfil.id), name: perfil.nombre, displayName: perfil.nombre },
+      pubKeyCredParams: [{ type:'public-key', alg:-7 }, { type:'public-key', alg:-257 }],
+      authenticatorSelection: { authenticatorAttachment:'platform', userVerification:'required' }, timeout: 60000 } });
+    perfil.cred = a64(c.rawId); guardarPerfiles(); pintar(); alert('Face ID / huella activado.');
+  } catch(e){ alert('Aquí no se puede usar Face ID. Usa tu contraseña.'); }
+}
+function velo(){   // cortina de bloqueo suave: tapa la pantalla, pero la llave sigue en memoria para reingresar con Face ID
+  if (!perfil || $('#velo')) return;
+  const d = document.createElement('div'); d.id = 'velo';
+  d.style.cssText = 'position:fixed;inset:0;z-index:40;background:var(--bg);display:flex;flex-direction:column;justify-content:center;align-items:center;gap:12px;padding:24px';
+  d.innerHTML = '<h1>Bloqueada</h1><button onclick="veloBio()">Usar Face ID / huella</button><button class="ghost" onclick="bloquear()">Usar contraseña</button>';
+  document.body.appendChild(d);
+}
+async function veloBio(){
+  try {
+    await navigator.credentials.get({ publicKey: { challenge: crypto.getRandomValues(new Uint8Array(32)),
+      allowCredentials: [{ type:'public-key', id: de64(perfil.cred) }], userVerification:'required', timeout: 60000 } });
+    $('#velo').remove();
+  } catch(e){ alert('No se pudo verificar. Usa tu contraseña.'); }
+}
+// Al salir de la app: se tapa el contenido; si pasa más de 1 minuto, se bloquea
+document.addEventListener('visibilitychange', () => {
+  document.body.style.visibility = document.hidden ? 'hidden' : '';
+  if (document.hidden) oculto = Date.now();
+  else if (perfil && Date.now() - oculto > 60000) { perfil.cred ? velo() : bloquear(); }
+});
+
+bloquear(); // ¡arranca la app! Primero pide contraseña
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});   // permite abrirla sin internet
+</script>
+</body>
+</html>
